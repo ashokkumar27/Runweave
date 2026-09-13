@@ -31,6 +31,12 @@ class SessionRow(Base):
     history: Mapped[list] = mapped_column(JSON, default=list)
 
 
+class RegistrationRow(Base):
+    __tablename__ = "model_registrations"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    config: Mapped[dict] = mapped_column(JSON)
+
+
 class RunRow(Base):
     __tablename__ = "runs"
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -39,6 +45,8 @@ class RunRow(Base):
     key: Mapped[str] = mapped_column(String(128), unique=True)
     fingerprint: Mapped[str] = mapped_column(String(64))
     config: Mapped[dict] = mapped_column(JSON)
+    registration_id: Mapped[str | None] = mapped_column(ForeignKey("model_registrations.id"), nullable=True)
+    approval_wait_seconds: Mapped[int] = mapped_column(Integer, default=86400)
     input: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(32), index=True, default="queued")
     output: Mapped[dict | None] = mapped_column(JSON, nullable=True)

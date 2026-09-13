@@ -1,20 +1,22 @@
 """Private PydanticAI adapter; framework messages never enter the public API."""
 
-import os
 import re
 from dataclasses import dataclass
 from datetime import timedelta
 
 from fastmcp import Client
 from pydantic_ai import Agent, DeferredToolRequests, RunContext
+from pydantic_ai.capabilities import ResolveModelId
 from pydantic_ai.durable_exec.temporal import TemporalDurability
 from pydantic_ai.messages import ModelResponse, ToolCallPart, ToolReturnPart, UserPromptPart
 from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.toolsets import FunctionToolset
+from temporalio import workflow
 from temporalio.common import RetryPolicy
 
 from .config import settings
 from .db import Database
+from .model_adapter import SelectionModel, build_model
 from .schemas import Answer
 from .store import Store
 
@@ -117,24 +119,17 @@ async def convert_temperature(ctx: RunContext[Deps], celsius: float) -> float:
 
 
 fake_model = FunctionModel(fake_response)
-models = {"fake:deterministic": fake_model}
-# Construct clients once at worker startup. Credentials never travel in workflow deps/history.
-if os.environ.get("OPENAI_API_KEY"):
-    from openai import AsyncOpenAI
-    from pydantic_ai.models.openai import OpenAIResponsesModel
-    from pydantic_ai.providers.openai import OpenAIProvider
 
-    models["openai:gpt-4.1-mini"] = OpenAIResponsesModel(
-        "gpt-4.1-mini", provider=OpenAIProvider(openai_client=AsyncOpenAI(max_retries=0))
-    )
-if os.environ.get("ANTHROPIC_API_KEY"):
-    from anthropic import AsyncAnthropic
-    from pydantic_ai.models.anthropic import AnthropicModel
-    from pydantic_ai.providers.anthropic import AnthropicProvider
 
-    models["anthropic:claude-haiku-4-5"] = AnthropicModel(
-        "claude-haiku-4-5", provider=AnthropicProvider(anthropic_client=AsyncAnthropic(max_retries=0))
-    )
+async def resolve_registration(ctx, model_id):
+    if not model_id.startswith("registry:") or len(model_id) != 73:
+        raise ValueError("Unknown registration selection")
+    identity = model_id.split(":", 1)[1]
+    if workflow.in_workflow():
+        return SelectionModel(identity)
+    registration = await get_store().registration(identity)
+    return build_model(registration)
+
 
 agent = Agent(
     fake_model,
@@ -144,14 +139,14 @@ agent = Agent(
     toolsets=[toolset],
     retries=1,
     capabilities=[
+        ResolveModelId(resolve_registration),
         TemporalDurability(
-            models=models,
             activity_config={
                 "start_to_close_timeout": timedelta(seconds=45),
                 "schedule_to_close_timeout": timedelta(seconds=100),
                 "heartbeat_timeout": timedelta(seconds=10),
                 "retry_policy": RetryPolicy(maximum_attempts=2),
             },
-        )
+        ),
     ],
 )

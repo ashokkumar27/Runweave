@@ -12,7 +12,7 @@ class Contract(BaseModel):
 
 class AgentConfig(Contract):
     name: str = Field(min_length=1, max_length=100)
-    provider: Literal["fake", "openai", "anthropic"]
+    provider: str = Field(min_length=1, max_length=100, pattern=r"^[a-zA-Z0-9._-]+$")
     model: str = Field(min_length=1, max_length=100, pattern=r"^[a-zA-Z0-9._-]+$")
     instructions: str = Field(default="Use tools when appropriate. Return a concise answer.", max_length=8000)
     tools: list[Literal["add", "record_note", "convert_temperature"]] = Field(

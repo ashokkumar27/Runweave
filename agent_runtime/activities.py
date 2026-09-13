@@ -1,6 +1,6 @@
 from temporalio import activity
 
-from .runtime import get_store, models
+from .runtime import get_store
 from .telemetry import operation
 
 
@@ -8,8 +8,9 @@ from .telemetry import operation
 async def load_run(run_id: str) -> dict:
     with operation("run.load", run_id):
         data = await get_store().load(run_id)
-    config = data["config"]
-    data["model_available"] = f"{config['provider']}:{config['model']}" in models
+    registration = await get_store().registration(data["registration_id"])
+    data["model_available"] = registration.available()
+    data["total_tokens_limit"] = registration.total_tokens_limit
     return data
 
 

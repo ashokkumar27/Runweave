@@ -1,9 +1,11 @@
 """Real services. Poll observable state with deadlines; no guessed startup sleeps."""
 
 import asyncio
+import json
 import os
 import sys
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from uuid import uuid4
 
 import pytest
@@ -50,9 +52,9 @@ async def client():
 
 
 @asynccontextmanager
-async def working(store):
+async def working(store, temporal=None):
     configure_store(store)
-    temporal = await client()
+    temporal = temporal or await client()
     queue = f"test-{uuid4().hex}"
     dispatch = Dispatcher(store, temporal, queue)
     async with Worker(temporal, task_queue=queue, workflows=[RunWorkflow], activities=ACTIVITIES):
@@ -121,13 +123,16 @@ async def test_dispatch_ack_loss_and_cancel_before_start(pg_store):
     assert not any(e.type == "tool.started" for e in await pg_store.events(run.id))
 
 
-async def test_approval_survives_hard_worker_restart(pg_store, tmp_path):
+@pytest.mark.parametrize("time_skipping", [False, True])
+async def test_approval_survives_hard_worker_restart(pg_store, tmp_path, time_environment, time_skipping):
+    temporal = time_environment.client if time_skipping else await client()
     queue = f"restart-{uuid4().hex}"
     env = {
         **os.environ,
         "DATABASE_URL": pg_store.test_url,
         "DATABASE_SCHEMA": pg_store.test_schema,
         "TASK_QUEUE": queue,
+        "TEMPORAL_ADDRESS": temporal.service_client.config.target_host,
     }
     # Remove provider credentials: this subprocess test must never make a paid call.
     env.pop("OPENAI_API_KEY", None)
@@ -135,19 +140,47 @@ async def test_approval_survives_hard_worker_restart(pg_store, tmp_path):
     log = (tmp_path / "worker.log").open("w")
 
     async def start():
-        return await asyncio.create_subprocess_exec(
-            sys.executable, "-m", "agent_runtime.worker", env=env, stdout=log, stderr=log
-        )
+        command = [sys.executable, "-m", "agent_runtime.worker"]
+        if time_skipping:
+            # The Java test server cannot reset/expire a dead sticky queue after a
+            # time jump. Disable caching only in this test worker, forcing full replay.
+            command = [
+                sys.executable,
+                "-c",
+                "import asyncio, functools; import agent_runtime.worker as w; w.Worker = functools.partial(w.Worker, max_cached_workflows=0); asyncio.run(w.main())",
+            ]
+        return await asyncio.create_subprocess_exec(*command, env=env, stdout=log, stderr=log)
 
     process = await start()
     try:
         run = await submit(pg_store, "note:durable approval", tools=["record_note"])
         pending = await wait_status(pg_store, run.id, {"awaiting_approval"})
+        # PostgreSQL awaiting state commits before the activity acknowledgement and
+        # timer command. Kill only once the long wait is durably in Temporal history.
+        async with asyncio.timeout(20):
+            while True:
+                history = await temporal.get_workflow_handle(f"run:{run.id}").fetch_history()
+                if any(
+                    event.HasField("timer_started_event_attributes")
+                    and event.timer_started_event_attributes.start_to_fire_timeout.seconds == 86400
+                    for event in history.events
+                ):
+                    break
+                await asyncio.sleep(0.05)
         process.kill()
         await process.wait()
+        # Advance hours while the worker is dead; the active budget remains paused.
+        if time_skipping:
+            await time_environment.sleep(timedelta(hours=3))
+        changed = [registration.model_dump() for registration in pg_store.registry.entries.values()]
+        changed[0]["upstream_model"] = "operator-edited-after-submission"
+        registry_file = tmp_path / "models.json"
+        registry_file.write_text(json.dumps(changed))
+        env["MODEL_REGISTRY_FILE"] = str(registry_file)
         approval_id = pending.approvals[0].id
         await pg_store.decide(run.id, approval_id, True)
         process = await start()
+        await Dispatcher(pg_store, temporal, queue).once()
         result = await wait_status(pg_store, run.id, {"completed"})
         assert result.output.answer == "Note recorded"
         async with pg_store.database.sessions() as db:
@@ -155,7 +188,6 @@ async def test_approval_survives_hard_worker_restart(pg_store, tmp_path):
                 await db.scalar(select(func.count()).select_from(NoteRow).where(NoteRow.run_id == run.id))
                 == 1
             )
-        temporal = await client()
         history = await temporal.get_workflow_handle(f"run:{run.id}").fetch_history()
         from temporalio.worker import Replayer
 
@@ -167,15 +199,96 @@ async def test_approval_survives_hard_worker_restart(pg_store, tmp_path):
         log.close()
 
 
-async def test_approval_rejection_and_timeout(pg_store):
-    async with working(pg_store):
+async def two_round_response(messages, info):
+    from pydantic_ai.messages import ModelResponse, ToolCallPart, ToolReturnPart
+
+    returned = [
+        part
+        for message in messages
+        for part in message.parts
+        if isinstance(part, ToolReturnPart) and part.tool_name == "record_note"
+    ]
+    if len(returned) < 2:
+        return ModelResponse(
+            parts=[ToolCallPart("record_note", {"text": "round"}, tool_call_id=f"round-{len(returned)}")]
+        )
+    return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, {"answer": "done"})])
+
+
+async def wait_round(store, run_id, call_id):
+    async with asyncio.timeout(30):
+        while True:
+            run = await store.get(run_id)
+            if run.status == "awaiting_approval" and run.approvals[0].id == call_id:
+                return run
+            assert run.status not in {"completed", "failed", "cancelled"}, run.error
+            await asyncio.sleep(0.05)
+
+
+async def test_approval_rejection_and_cumulative_timeout(pg_store, time_environment, monkeypatch):
+    from agent_runtime.runtime import fake_model
+
+    async with working(pg_store, time_environment.client) as (temporal, dispatch):
         run = await submit(pg_store, "note:reject me", tools=["record_note"])
         pending = await wait_status(pg_store, run.id, {"awaiting_approval"})
         await pg_store.decide(run.id, pending.approvals[0].id, False)
         await wait_status(pg_store, run.id, {"completed"})
-        timed = await submit(pg_store, "note:expire", tools=["record_note"], timeout_seconds=5)
+        monkeypatch.setattr(fake_model, "function", two_round_response)
+        pg_store.approval_wait_seconds = 6 * 3600
+        timed = await submit(pg_store, "two rounds", tools=["record_note"])
+        pg_store.approval_wait_seconds = 86400  # A later operator edit cannot extend this run.
+        await wait_round(pg_store, timed.id, "round-0")
+        await time_environment.sleep(timedelta(hours=2))
+        await pg_store.decide(timed.id, "round-0", False)
+        await dispatch.once()
+        await wait_round(pg_store, timed.id, "round-1")
+        await time_environment.sleep(timedelta(hours=4, seconds=1))
         result = await wait_status(pg_store, timed.id, {"failed"})
-        assert result.error == "run_timeout"
+        assert result.error == "approval_timeout"
+        with pytest.raises(Problem):
+            await pg_store.decide(timed.id, "round-1", True)
+        # Even a late already-in-flight signal cannot execute the expired effect.
+        handle = temporal.get_workflow_handle(f"run:{timed.id}")
+        await handle.result()
+        await dispatch.once()
+        async with pg_store.database.sessions() as db:
+            assert await db.scalar(select(func.count()).select_from(NoteRow)) == 0
+        from temporalio.worker import Replayer
+
+        await Replayer(workflows=[RunWorkflow], plugins=[PydanticAIPlugin()]).replay_workflow(
+            await handle.fetch_history()
+        )
+
+
+@pytest.mark.parametrize("limit", ["active", "requests"])
+async def test_cumulative_execution_and_usage_across_resumes(pg_store, time_environment, monkeypatch, limit):
+    from agent_runtime.runtime import fake_model
+
+    calls = []
+
+    async def response(messages, info):
+        calls.append(len(messages))
+        if limit == "active":
+            await asyncio.sleep(2)
+        return await two_round_response(messages, info)
+
+    monkeypatch.setattr(fake_model, "function", response)
+    async with working(pg_store, time_environment.client) as (_, dispatch):
+        run = await submit(
+            pg_store,
+            "two rounds",
+            tools=["record_note"],
+            timeout_seconds=5 if limit == "active" else 120,
+            max_requests=2 if limit == "requests" else 6,
+        )
+        for call_id in ["round-0", "round-1"]:
+            await wait_round(pg_store, run.id, call_id)
+            await time_environment.sleep(timedelta(hours=2))
+            await pg_store.decide(run.id, call_id, False)
+            await dispatch.once()
+        result = await wait_status(pg_store, run.id, {"failed"})
+        assert result.error == ("run_timeout" if limit == "active" else "usage_limit")
+        assert len(calls) == (3 if limit == "active" else 2)
         async with pg_store.database.sessions() as db:
             assert await db.scalar(select(func.count()).select_from(NoteRow)) == 0
 
@@ -247,3 +360,28 @@ async def test_dispatch_outage_and_closed_workflow_reconciliation(pg_store, monk
     result = await pg_store.get(run.id)
     assert result.status == "failed"
     assert result.error == "workflow_closed_without_result"
+
+
+async def test_resume_activity_retries_consume_active_budget(pg_store, time_environment, monkeypatch):
+    attempts = []
+    original = pg_store.resumed
+
+    async def retry_resume(run_id):
+        attempts.append(run_id)
+        await asyncio.sleep(3)
+        if len(attempts) == 1:
+            raise RuntimeError("Injected resume failure")
+        await original(run_id)
+
+    monkeypatch.setattr(pg_store, "resumed", retry_resume)
+    async with working(pg_store, time_environment.client) as (_, dispatch):
+        run = await submit(pg_store, "note:retry budget", tools=["record_note"], timeout_seconds=5)
+        pending = await wait_status(pg_store, run.id, {"awaiting_approval"})
+        await time_environment.sleep(timedelta(hours=2))
+        await pg_store.decide(run.id, pending.approvals[0].id, False)
+        await dispatch.once()
+        result = await wait_status(pg_store, run.id, {"failed"})
+        assert result.error == "run_timeout"
+        assert len(attempts) == 2
+        async with pg_store.database.sessions() as db:
+            assert await db.scalar(select(func.count()).select_from(NoteRow)) == 0

@@ -63,3 +63,12 @@ async def pg_store():
     async with admin.begin() as conn:
         await conn.execute(text(f"DROP SCHEMA {schema} CASCADE"))
     await admin.dispose()
+
+
+@pytest_asyncio.fixture
+async def time_environment():
+    from pydantic_ai.durable_exec.temporal import PydanticAIPlugin
+    from temporalio.testing import WorkflowEnvironment
+
+    async with await WorkflowEnvironment.start_time_skipping(plugins=[PydanticAIPlugin()]) as environment:
+        yield environment

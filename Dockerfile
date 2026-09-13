@@ -4,6 +4,7 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 COPY agent_runtime ./agent_runtime
+COPY config ./config
 COPY alembic.ini ./
 COPY migrations ./migrations
 ENV PYTHONUNBUFFERED=1 PYDANTIC_AI_NO_BANNER=1

@@ -3,7 +3,9 @@ from uuid import uuid4
 
 from sqlalchemy import func, select
 
-from .db import AgentRow, EventRow, GateRow, NoteRow, OutboxRow, RunRow, SessionRow
+from .config import settings
+from .db import AgentRow, EventRow, GateRow, NoteRow, OutboxRow, RegistrationRow, RunRow, SessionRow
+from .registry import Registration, load_registry
 from .schemas import Agent, AgentConfig, Event, Run, RunCreate, Session
 
 TERMINAL = {"completed", "failed", "cancelled"}
@@ -15,14 +17,31 @@ class Problem(Exception):
 
 
 class Store:
-    def __init__(self, database, max_active=20):
+    def __init__(self, database, max_active=20, registry=None, approval_wait_seconds=None):
         self.database, self.max_active = database, max_active
+        self.registry = registry or load_registry()
+        self.approval_wait_seconds = (
+            settings().approval_wait_seconds if approval_wait_seconds is None else approval_wait_seconds
+        )
+
+    def selection(self, config):
+        try:
+            return self.registry.select(config)
+        except ValueError as exc:
+            raise Problem(422, str(exc)) from None
+
+    async def registration(self, identity):
+        async with self.database.sessions() as db:
+            row = await db.get(RegistrationRow, identity) if identity else None
+            if row is None:
+                raise ValueError("Registration unavailable")
+            registration = Registration.model_validate(row.config)
+            if registration.identity != identity:
+                raise ValueError("Registration identity mismatch")
+            return registration
 
     async def agent(self, config: AgentConfig, agent_id=None):
-        # Explicit tested model registry, not a promise about arbitrary model capabilities.
-        supported = {"fake": {"deterministic"}, "openai": {"gpt-4.1-mini"}, "anthropic": {"claude-haiku-4-5"}}
-        if config.model not in supported[config.provider]:
-            raise Problem(422, "Unsupported provider/model combination")
+        self.selection(config)
         async with self.database.sessions.begin() as db:
             row = await db.get(AgentRow, agent_id) if agent_id else None
             if agent_id and row is None:
@@ -79,6 +98,10 @@ class Store:
             agent = await db.get(AgentRow, body.agent_id)
             if agent is None:
                 raise Problem(404, "Agent not found")
+            registration = self.selection(AgentConfig.model_validate(agent.config))
+            if await db.get(RegistrationRow, registration.identity) is None:
+                db.add(RegistrationRow(id=registration.identity, config=registration.model_dump()))
+                await db.flush()
             count = await db.scalar(
                 select(func.count()).select_from(RunRow).where(RunRow.status.not_in(TERMINAL))
             )
@@ -107,6 +130,8 @@ class Store:
                 fingerprint=fingerprint,
                 config=agent.config,
                 input=body.input,
+                registration_id=registration.identity,
+                approval_wait_seconds=self.approval_wait_seconds,
             )
             db.add(row)
             await db.flush()
@@ -146,6 +171,8 @@ class Store:
                 "config": row.config,
                 "input": row.input,
                 "history": session.history,
+                "registration_id": row.registration_id,
+                "approval_wait_seconds": row.approval_wait_seconds,
                 "session_id": row.session_id,
             }
 

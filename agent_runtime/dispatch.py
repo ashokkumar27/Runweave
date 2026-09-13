@@ -31,13 +31,16 @@ class Dispatcher:
                     continue
                 handle = self.client.get_workflow_handle(f"run:{item.run_id}")
                 if item.kind == "start":
+                    run = await db.get(RunRow, item.run_id)
                     try:
                         await self.client.start_workflow(
                             "RunWorkflow",
                             item.run_id,
                             id=f"run:{item.run_id}",
                             task_queue=self.task_queue,
-                            execution_timeout=timedelta(minutes=15),
+                            execution_timeout=timedelta(
+                                seconds=run.config["timeout_seconds"] + run.approval_wait_seconds + 180
+                            ),
                             id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
                         )
                     except WorkflowAlreadyStartedError:

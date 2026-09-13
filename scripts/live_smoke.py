@@ -28,23 +28,12 @@ def main():
     except Exception as exc:
         status = getattr(exc, "status_code", None)
         body = getattr(exc, "body", None)
-        code = (
-            body.get("error", {}).get("code")
-            if isinstance(body, dict) and isinstance(body.get("error"), dict)
-            else None
-        )
-        allowed_codes = {
-            "insufficient_quota",
-            "rate_limit_exceeded",
-            "invalid_api_key",
-            "model_not_found",
-            "unsupported_parameter",
-            "invalid_request_error",
-        }
-        safe_code = code if code in allowed_codes else "unclassified"
+        from scripts.auth_diagnostic import safe_error
+
+        safe_code, safe_type = safe_error(body)
         safe_status = status if isinstance(status, int) else "none"
         print(
-            f"{args.provider}: FAILED ({type(exc).__name__}; HTTP {safe_status}; code={safe_code}; body suppressed)"
+            f"{args.provider}: FAILED ({type(exc).__name__}; HTTP {safe_status}; code={safe_code}; type={safe_type}; body suppressed)"
         )
         return 1
     return 0
@@ -54,7 +43,7 @@ async def check(provider):
     from pydantic_ai.usage import UsageLimits
 
     from agent_runtime.db import Database
-    from agent_runtime.runtime import Deps, agent, configure_store, models
+    from agent_runtime.runtime import Deps, agent, configure_store
     from agent_runtime.schemas import AgentConfig, RunCreate
     from agent_runtime.store import Store
 
@@ -71,7 +60,7 @@ async def check(provider):
             async with asyncio.timeout(45):
                 result = await agent.run(
                     prompt,
-                    model=models[f"{provider}:{model}"],
+                    model=f"registry:{(await store.load(run.id))['registration_id']}",
                     deps=Deps(run.id, ["add"]),
                     retries=0,
                     usage_limits=UsageLimits(request_limit=2, tool_calls_limit=1, total_tokens_limit=3000),
