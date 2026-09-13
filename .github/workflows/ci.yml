@@ -1,0 +1,24 @@
+name: checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.11.12'
+          python-version: '3.13'
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run pytest -q
+      - run: docker compose up -d --build postgres temporal mcp
+      - name: Wait for local services
+        run: uv run python -m scripts.wait_services
+      - run: uv run alembic upgrade head
+      - run: uv run pytest -q --integration
+      - if: always()
+        run: docker compose down -v
