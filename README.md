@@ -1,4 +1,4 @@
-# Independent Agents API
+# Runweave - Independent Agents API
 
 A self-hosted API for tasks that combine instructions, context, and authorized tools to produce results. Submit work, follow its progress, and continue a session through the API, Python client, or CLI.
 
