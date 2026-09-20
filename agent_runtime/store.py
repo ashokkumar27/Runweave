@@ -4,9 +4,23 @@ from uuid import uuid4
 from sqlalchemy import func, select
 
 from .config import settings
-from .db import AgentRow, EventRow, GateRow, NoteRow, OutboxRow, RegistrationRow, RunRow, SessionRow
+from .db import (
+    AgentRow,
+    EventRow,
+    GateRow,
+    NoteRow,
+    OutboxRow,
+    RegistrationRow,
+    RunRow,
+    SessionRow,
+    ToolkitRunRow,
+)
+from .general_actions import GeneralActions
+from .general_store import GeneralStore
 from .registry import Registration, load_registry
 from .schemas import Agent, AgentConfig, Event, Run, RunCreate, Session
+from .tool_registry import ToolRegistry
+from .toolkit_store import ToolkitStore
 
 TERMINAL = {"completed", "failed", "cancelled"}
 
@@ -16,17 +30,25 @@ class Problem(Exception):
         self.status, self.detail = status, detail
 
 
-class Store:
+class Store(GeneralActions, GeneralStore, ToolkitStore):
     def __init__(self, database, max_active=20, registry=None, approval_wait_seconds=None):
         self.database, self.max_active = database, max_active
         self.registry = registry or load_registry()
+        self.tools = ToolRegistry()
         self.approval_wait_seconds = (
             settings().approval_wait_seconds if approval_wait_seconds is None else approval_wait_seconds
         )
 
     def selection(self, config):
         try:
-            return self.registry.select(config)
+            registration = self.registry.select(config)
+            if (
+                not config.general
+                and config.max_total_tokens
+                and config.max_total_tokens > registration.total_tokens_limit
+            ):
+                raise ValueError("Token limit exceeds registration")
+            return registration
         except ValueError as exc:
             raise Problem(422, str(exc)) from None
 
@@ -43,6 +65,7 @@ class Store:
     async def agent(self, config: AgentConfig, agent_id=None):
         self.selection(config)
         async with self.database.sessions.begin() as db:
+            await self.validate_tool_config(db, config, agent_id)
             row = await db.get(AgentRow, agent_id) if agent_id else None
             if agent_id and row is None:
                 raise Problem(404, "Agent not found")
@@ -69,7 +92,7 @@ class Store:
 
     @staticmethod
     def public(row):
-        return Run(**{k: getattr(row, k) for k in Run.model_fields})
+        return Run(**{k: getattr(row, k) for k in Run.model_fields if hasattr(row, k)})
 
     async def locked(self, db, run_id):
         row = await db.scalar(select(RunRow).where(RunRow.id == run_id).with_for_update())
@@ -86,18 +109,35 @@ class Store:
         await db.flush()
 
     async def submit(self, body: RunCreate, key: str):
-        fingerprint = hashlib.sha256(body.model_dump_json().encode()).hexdigest()
+        fingerprint = hashlib.sha256(
+            body.model_dump_json(
+                exclude={"general", "task", "workspace"}
+                | ({"artifact_ids"} if not body.artifact_ids else set())
+            ).encode()
+        ).hexdigest()
         async with self.database.sessions.begin() as db:
             # One workspace: this short lock enforces global admission + idempotency atomically.
             await db.scalar(select(GateRow).where(GateRow.id == 1).with_for_update())
             existing = await db.scalar(select(RunRow).where(RunRow.key == key))
             if existing:
+                if existing.config.get("general"):
+                    from .project_store import digest
+
+                    fingerprint = digest({"fingerprint_version": 3, **body.model_dump()})
+                elif body.task is not None or body.workspace is not None:
+                    raise Problem(409, "Idempotency key reused with different input")
                 if existing.fingerprint != fingerprint:
                     raise Problem(409, "Idempotency key reused with different input")
-                return self.public(existing)
+                return await self.get(existing.id)
             agent = await db.get(AgentRow, body.agent_id)
             if agent is None:
                 raise Problem(404, "Agent not found")
+            if agent.config.get("general"):
+                from .project_store import digest
+
+                fingerprint = digest({"fingerprint_version": 3, **body.model_dump()})
+            elif body.task is not None or body.workspace is not None:
+                raise Problem(422, "V3 inputs require a general agent")
             registration = self.selection(AgentConfig.model_validate(agent.config))
             if await db.get(RegistrationRow, registration.identity) is None:
                 db.add(RegistrationRow(id=registration.identity, config=registration.model_dump()))
@@ -135,6 +175,12 @@ class Store:
             )
             db.add(row)
             await db.flush()
+            if agent.config.get("general"):
+                await self.initialize_general(db, row, AgentConfig.model_validate(agent.config), body)
+            else:
+                await self.initialize_toolkit(
+                    db, row, AgentConfig.model_validate(agent.config), body.artifact_ids
+                )
             await self.emit(db, row, "created", "run.queued")
             db.add(OutboxRow(id=f"start:{row.id}", run_id=row.id, kind="start"))
             return self.public(row)
@@ -144,7 +190,81 @@ class Store:
             row = await db.get(RunRow, run_id)
             if row is None:
                 raise Problem(404, "Run not found")
-            return self.public(row)
+            public = self.public(row)
+        general = await self.general(run_id)
+        if general:
+            public.execution_version = 3
+            public.artifact_ids = general["artifact_ids"]
+            public.root_run_id = general["root_id"]
+            public.parent_run_id = general["parent_id"]
+            public.depth = int(bool(general["parent_id"]))
+            public.session_id = None if general["parent_id"] else public.session_id
+            from .general_contracts import CompletionAssessment, TaskState
+
+            public.task_state = TaskState.model_validate(general["task_state"])
+            public.completion_assessment = (
+                CompletionAssessment.model_validate(general["completion_assessment"])
+                if general.get("completion_assessment")
+                else None
+            )
+            public.workspace = general.get("workspace")
+            public.stop_reason = general.get("stop_reason")
+            public.cleanup_state = general["cleanup_state"]
+            public.cleanup_detail = {
+                "children": len(general["children"]),
+                "state": general["cleanup_state"],
+                "retry_code": "cleanup_pending" if general["cleanup_state"] == "pending" else None,
+                "scope": "run-owned children and command attempts; committed projects retained",
+            }
+            public.specialist = general.get("role")
+            public.assignment = general.get("assignment")
+            public.effective_grants = {
+                "tools": list(general["tools"]),
+                "limits": general.get("local_limits", general["policy"]["limits"]),
+                "read_prefixes": general.get("assignment", {}).get("read_prefixes", [""]),
+                "write_prefixes": general.get("assignment", {}).get("write_prefixes", [""]),
+            }
+            return Run.model_validate(public.model_dump())
+        feature = await self.toolkit(run_id)
+        if feature:
+            public.root_run_id = feature["root_id"]
+            public.cleanup_state = feature.get("cleanup_state", "complete")
+            if feature.get("execution_version") == 2 or feature["parent_id"]:
+                b = await self.budget(run_id)
+                public.usage = (
+                    {
+                        "requests": b["requests"],
+                        "tool_calls": b["tool_calls"],
+                        "reported_tokens": b["reported_tokens"],
+                        "reserved_tokens": b["reserved_tokens"],
+                    }
+                    if not feature["parent_id"]
+                    else feature.get("usage", {})
+                )
+            public.parent_run_id = feature["parent_id"]
+            public.depth = int(bool(feature["parent_id"]))
+            public.specialist = feature.get("specialist")
+            public.artifact_ids = feature["artifact_ids"]
+            from .tool_contracts import ArtifactRef
+
+            public.artifacts = [ArtifactRef.model_validate(a) for a in feature["artifacts"]]
+            from .tool_registry import digest
+
+            public.tool_registration_ids = {k: digest(v) for k, v in feature["tools"].items()}
+            if feature["parent_id"]:
+                public.session_id = None
+            if public.status in TERMINAL:
+                from .tool_contracts import TaskResult
+
+                public.task_result = TaskResult(
+                    status=public.status,
+                    summary=public.output.answer[:2000] if public.output else "",
+                    evidence=feature["evidence"],
+                    artifacts=feature["artifacts"],
+                    error=public.error,
+                    usage=public.usage,
+                )
+        return public
 
     async def events(self, run_id, cursor=0):
         async with self.database.sessions() as db:
@@ -160,58 +280,150 @@ class Store:
 
     async def load(self, run_id):
         async with self.database.sessions.begin() as db:
-            row = await self.locked(db, run_id)
+            feature = await db.get(ToolkitRunRow, run_id)
+            if feature:
+                root, _, row, feature = await self.tree_lock(db, run_id, active=False)
+            else:
+                row = await self.locked(db, run_id)
             session = await db.get(SessionRow, row.session_id)
             if row.status == "queued":
                 row.status = "running"
                 await self.emit(db, row, "running", "run.running")
+                if feature and feature.parent_id:
+                    await self.emit(
+                        db, root, "child-started:" + run_id, "child.started", {"child_run_id": run_id}
+                    )
             return {
                 "id": row.id,
                 "status": row.status,
                 "config": row.config,
                 "input": row.input,
-                "history": session.history,
+                "history": []
+                if (feature := await db.get(ToolkitRunRow, run_id)) and feature.parent_id
+                else session.history,
                 "registration_id": row.registration_id,
                 "approval_wait_seconds": row.approval_wait_seconds,
                 "session_id": row.session_id,
             }
 
     async def finish(self, run_id, status, output=None, history=None, usage=None, error=None):
+        if await self.general(run_id):
+            if status == "completed":
+                raise Problem(409, "completion_requires_evidence_gate")
+            await self.general_stop(run_id, error or "execution_stopped")
+            return (await self.get(run_id)).status
         async with self.database.sessions.begin() as db:
-            row = await self.locked(db, run_id)
+            feature = await db.get(ToolkitRunRow, run_id)
+            if feature:
+                root, rf, row, feature = await self.tree_lock(db, run_id, active=False)
+                if root.status in TERMINAL and root.id != run_id:
+                    status, output, error = "cancelled", None, "root_closed"
+            else:
+                row = await self.locked(db, run_id)
             if row.status in TERMINAL:
                 return row.status
             row.status, row.output, row.error, row.usage = status, output, error, usage or {}
             row.approvals = []
-            if status == "completed":
+            feature = await db.get(ToolkitRunRow, run_id)
+            if status == "completed" and not (feature and feature.parent_id):
                 session = await db.scalar(
                     select(SessionRow).where(SessionRow.id == row.session_id).with_for_update()
                 )
                 session.history = history or []
             await self.emit(db, row, "terminal", f"run.{status}", {"error": error} if error else {})
+            if feature and feature.parent_id:
+                rf.state = {
+                    **rf.state,
+                    "evidence": (rf.state["evidence"] + feature.state["evidence"])[:12],
+                    "artifacts": (rf.state["artifacts"] + feature.state["artifacts"])[:8],
+                }
+                await self.emit(
+                    db, root, "child-terminal:" + run_id, "child." + status, {"child_run_id": run_id}
+                )
+            if feature and not feature.parent_id and status != "completed":
+                children = list(
+                    await db.scalars(
+                        select(RunRow)
+                        .join(ToolkitRunRow, ToolkitRunRow.run_id == RunRow.id)
+                        .where(ToolkitRunRow.parent_id == run_id, RunRow.status.not_in(TERMINAL))
+                    )
+                )
+                for child in children:
+                    child.status, child.approvals = "cancelled", []
+                    await self.emit(db, child, "terminal", "run.cancelled")
+                    db.add(OutboxRow(id=f"cancel:{child.id}", run_id=child.id, kind="cancel"))
             return status
 
     async def cancel(self, run_id):
+        if await self.general(run_id):
+            return await self.general_cancel(run_id)
+        feature = await self.toolkit(run_id)
+        if feature:
+            run_id = feature["root_id"]
         async with self.database.sessions.begin() as db:
-            row = await self.locked(db, run_id)
-            if row.status not in TERMINAL:
-                row.status, row.approvals = "cancelled", []
-                await self.emit(db, row, "terminal", "run.cancelled")
-                db.add(OutboxRow(id=f"cancel:{run_id}", run_id=run_id, kind="cancel"))
+            if feature:
+                row, _, _, _ = await self.tree_lock(db, run_id, active=False)
+            else:
+                row = await self.locked(db, run_id)
+            targets = [row]
+            if feature:
+                targets += list(
+                    await db.scalars(
+                        select(RunRow)
+                        .join(ToolkitRunRow, ToolkitRunRow.run_id == RunRow.id)
+                        .where(ToolkitRunRow.parent_id == run_id)
+                    )
+                )
+            for target in targets:
+                if target.status not in TERMINAL:
+                    target.status, target.approvals = "cancelled", []
+                    await self.emit(db, target, "terminal", "run.cancelled")
+                    db.add(OutboxRow(id=f"cancel:{target.id}", run_id=target.id, kind="cancel"))
             return self.public(row)
 
     async def awaiting(self, run_id, approvals):
         async with self.database.sessions.begin() as db:
-            row = await self.locked(db, run_id)
+            feature = await db.get(ToolkitRunRow, run_id)
+            if feature:
+                _, _, row, feature = await self.tree_lock(db, run_id)
+            else:
+                row = await self.locked(db, run_id)
             if row.status in TERMINAL:
                 return
             row.status, row.approvals = "awaiting_approval", approvals
+            if feature and feature.parent_id:
+                root = await self.locked(db, feature.root_id)
+                root.status = "awaiting_approval"
+                root.approvals = [
+                    {**a, "id": run_id + ":" + a["id"], "origin_run_id": run_id} for a in approvals
+                ]
+                for approval in root.approvals:
+                    await self.emit(
+                        db, root, f"child-approval:{run_id}:{approval['id']}", "approval.required", approval
+                    )
+            if feature:
+                feature.state = {
+                    **feature.state,
+                    "reviewed": {
+                        **feature.state.get("reviewed", {}),
+                        **{a["id"]: a["arguments"] for a in approvals},
+                    },
+                }
             for approval in approvals:
                 await self.emit(db, row, f"approval:{approval['id']}", "approval.required", approval)
 
     async def decide(self, run_id, approval_id, approved):
+        if await self.general(run_id):
+            return await self.general_decide(run_id, approval_id, approved)
         async with self.database.sessions.begin() as db:
             row = await self.locked(db, run_id)
+            feature = await db.get(ToolkitRunRow, run_id)
+            if feature and feature.parent_id:
+                raise Problem(409, "approval_requires_root")
+            origin = next(
+                (a.get("origin_run_id", run_id) for a in row.approvals if a["id"] == approval_id), run_id
+            )
+            origin_call_id = approval_id.removeprefix(origin + ":") if origin != run_id else approval_id
             old = row.decisions.get(approval_id)
             if old is not None:
                 if old != approved:
@@ -220,6 +432,11 @@ class Store:
             if row.status != "awaiting_approval" or approval_id not in {a["id"] for a in row.approvals}:
                 raise Problem(409, "Approval is not pending")
             row.decisions = {**row.decisions, approval_id: approved}
+            if feature and not approved:
+                feature.state = {**feature.state, "denied": True}
+            if origin != run_id:
+                child = await self.locked(db, origin)
+                child.decisions = {**child.decisions, origin_call_id: approved}
             await self.emit(
                 db,
                 row,
@@ -230,18 +447,27 @@ class Store:
             db.add(
                 OutboxRow(
                     id=f"decision:{run_id}:{approval_id}",
-                    run_id=run_id,
+                    run_id=origin,
                     kind="decision",
-                    payload={"id": approval_id, "approved": approved},
+                    payload={"id": origin_call_id, "approved": approved},
                 )
             )
             return self.public(row)
 
     async def resumed(self, run_id):
         async with self.database.sessions.begin() as db:
-            row = await self.locked(db, run_id)
+            feature = await db.get(ToolkitRunRow, run_id)
+            if feature:
+                _, _, row, feature = await self.tree_lock(db, run_id, active=False)
+            else:
+                row = await self.locked(db, run_id)
             if row.status not in TERMINAL:
                 row.status, row.approvals = "running", []
+                feature = await db.get(ToolkitRunRow, run_id)
+                if feature and feature.parent_id:
+                    root = await self.locked(db, feature.root_id)
+                    if root.status not in TERMINAL:
+                        root.status, root.approvals = "running", []
 
     async def tool_event(self, run_id, call_id, tool, phase):
         async with self.database.sessions.begin() as db:
@@ -254,7 +480,13 @@ class Store:
     async def record_note(self, run_id, call_id, text):
         operation = f"{run_id}:{call_id}"
         async with self.database.sessions.begin() as db:
-            row = await self.locked(db, run_id)
+            feature = await db.get(ToolkitRunRow, run_id)
+            if feature:
+                root, rf, row, _ = await self.tree_lock(db, run_id)
+                if rf.state.get("execution_version") == 2 and rf.state.get("denied"):
+                    raise Problem(409, "tool_denied")
+            else:
+                row = await self.locked(db, run_id)
             existing = await db.get(NoteRow, operation)
             if existing:
                 if existing.text != text:
@@ -262,6 +494,8 @@ class Store:
                 return "Note recorded"
             if row.status in TERMINAL:
                 raise Problem(409, "Run is terminal")
+            if feature and feature.state.get("reviewed", {}).get(call_id) != {"text": text}:
+                raise Problem(409, "Approval arguments changed")
             if row.decisions.get(call_id) is not True:
                 raise Problem(409, "Tool approval required")
             db.add(NoteRow(operation_id=operation, run_id=run_id, text=text))

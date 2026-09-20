@@ -1,11 +1,18 @@
 """Client construction is called only outside deterministic workflows."""
 
 import os
+from contextvars import ContextVar
 
-from openai import DefaultAsyncHttpxClient
+import httpx
+from openai import DEFAULT_TIMEOUT, DefaultAsyncHttpxClient
 from pydantic_ai.models import Model
 from pydantic_ai.providers.anthropic import AnthropicProvider
 from pydantic_ai.providers.openai import OpenAIProvider
+
+from .config import settings
+
+request_context = ContextVar("runtime_request_context", default=None)
+http_client_factory = None
 
 
 class OwnedClient:
@@ -55,6 +62,8 @@ async def strip_authorization(request):
 
 
 def build_model(registration, *, http_client=None):
+    if http_client is None and http_client_factory is not None:
+        http_client = http_client_factory(registration)
     if not registration.tool_calling:
         raise ValueError("Model does not support required tool calling")
     if not registration.available():
@@ -69,6 +78,19 @@ def build_model(registration, *, http_client=None):
         from openai import AsyncOpenAI
         from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
 
+        if (
+            http_client is None
+            and registration.endpoint in {"https://api.openai.com/v1", "https://api.openai.com/v1/"}
+            and settings().openai_force_ipv4
+        ):
+            # The SDK default client uses httpx2; its streams cannot be sent
+            # through an httpx transport. Keep the client and transport matched.
+            http_client = httpx.AsyncClient(
+                timeout=httpx.Timeout(**DEFAULT_TIMEOUT.as_dict()),
+                follow_redirects=True,
+                transport=httpx.AsyncHTTPTransport(local_address="0.0.0.0", trust_env=False, retries=0),
+                trust_env=False,
+            )
         # An inert placeholder prevents ambient OPENAI_API_KEY inheritance. Remove
         # the header so unauthenticated compatible servers receive no bearer token.
         if registration.auth == "none":
@@ -86,7 +108,14 @@ def build_model(registration, *, http_client=None):
         )
         cls = OpenAIChatModel if registration.adapter == "openai_chat" else OpenAIResponsesModel
         return cls(
-            registration.upstream_model, provider=OwnedOpenAIProvider(openai_client=client), profile=profile
+            registration.upstream_model,
+            provider=OwnedOpenAIProvider(openai_client=client),
+            profile=profile,
+            settings=(
+                {"openai_reasoning_effort": registration.reasoning_effort}
+                if registration.reasoning_effort is not None
+                else None
+            ),
         )
     from anthropic import AsyncAnthropic
     from pydantic_ai.models.anthropic import AnthropicModel

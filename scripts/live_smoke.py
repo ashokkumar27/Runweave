@@ -10,6 +10,7 @@ from pathlib import Path
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--provider", choices=["openai", "anthropic"], required=True)
+    parser.add_argument("--model", help="Registered model alias (OpenAI default: gpt-5.6-luna)")
     parser.add_argument(
         "--load-local-env", action="store_true", help="Load the authorized .env.local in this process only"
     )
@@ -24,7 +25,7 @@ def main():
         return 2
     os.environ["PYDANTIC_AI_NO_BANNER"] = "1"
     try:
-        asyncio.run(check(args.provider))
+        asyncio.run(check(args.provider, args.model))
     except Exception as exc:
         status = getattr(exc, "status_code", None)
         body = getattr(exc, "body", None)
@@ -39,7 +40,8 @@ def main():
     return 0
 
 
-async def check(provider):
+async def check(provider, model=None):
+    from pydantic_ai.models.openai import OpenAIResponsesModelSettings
     from pydantic_ai.usage import UsageLimits
 
     from agent_runtime.db import Database
@@ -47,14 +49,27 @@ async def check(provider):
     from agent_runtime.schemas import AgentConfig, RunCreate
     from agent_runtime.store import Store
 
-    model = "gpt-4.1-mini" if provider == "openai" else "claude-haiku-4-5"
+    model = model or ("gpt-5.6-luna" if provider == "openai" else "claude-haiku-4-5")
     with tempfile.TemporaryDirectory(prefix="agents-smoke-") as directory:
         db = Database(f"sqlite+aiosqlite:///{directory}/smoke.db")
         try:
             await db.create_test_schema()
             store = Store(db)
             configure_store(store)
-            saved = await store.agent(AgentConfig(name="live smoke", provider=provider, model=model))
+            config = AgentConfig(
+                name="live smoke",
+                provider=provider,
+                model=model,
+                max_tokens=256,
+                max_requests=2,
+                max_tool_calls=1,
+                timeout_seconds=45,
+            )
+            registration = store.registry.select(config)
+            model_settings = OpenAIResponsesModelSettings(max_tokens=256, timeout=20)
+            if registration.adapter == "openai_responses" and registration.upstream_model == "gpt-5.6-luna":
+                model_settings["openai_reasoning_effort"] = "none"
+            saved = await store.agent(config)
             prompt = 'Call the add tool exactly once with a=2 and b=3. Return answer="5" and value=5.'
             run = await store.submit(RunCreate(agent_id=saved.id, input=prompt), "smoke")
             async with asyncio.timeout(45):
@@ -64,7 +79,7 @@ async def check(provider):
                     deps=Deps(run.id, ["add"]),
                     retries=0,
                     usage_limits=UsageLimits(request_limit=2, tool_calls_limit=1, total_tokens_limit=3000),
-                    model_settings={"max_tokens": 256, "timeout": 20},
+                    model_settings=model_settings,
                 )
             assert result.output.value == 5 and result.usage.tool_calls == 1
             print(f"{provider}: PASS (typed add + structured output; {result.usage.requests} requests)")

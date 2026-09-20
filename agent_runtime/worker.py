@@ -7,8 +7,12 @@ from temporalio.worker import Worker
 from .activities import ACTIVITIES
 from .config import settings
 from .dispatch import Dispatcher
+from .general_runtime import GENERAL_ACTIVITIES
+from .general_workflow import GeneralWorkflow
 from .runtime import get_store
 from .telemetry import configure, configure_logging
+from .toolkit_runtime import toolkit_child, toolkit_state, toolkit_step, toolkit_tool
+from .toolkit_workflow import ToolkitWorkflow
 from .workflow import RunWorkflow
 
 
@@ -34,8 +38,19 @@ async def main():
     store = get_store()
     dispatcher = Dispatcher(store, client, config.task_queue)
     try:
-        async with Worker(
-            client, task_queue=config.task_queue, workflows=[RunWorkflow], activities=ACTIVITIES
+        async with (
+            Worker(
+                client,
+                task_queue=config.task_queue,
+                workflows=[RunWorkflow, ToolkitWorkflow],
+                activities=ACTIVITIES + [toolkit_child, toolkit_state, toolkit_step, toolkit_tool],
+            ),
+            Worker(
+                client,
+                task_queue=config.task_queue + "-v3",
+                workflows=[GeneralWorkflow],
+                activities=GENERAL_ACTIVITIES,
+            ),
         ):
             await dispatcher.run()
     finally:

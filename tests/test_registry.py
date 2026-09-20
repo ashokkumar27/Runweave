@@ -54,12 +54,12 @@ async def test_config_only_models_validation_and_private_contract(store):
             run = created.json()
             await store.cancel(run["id"])
             events = await client.get(f"/v1/runs/{run['id']}/events")
+            assert "registration_id" not in run  # Model selection remains private; tool IDs are public.
             for private in [
                 "backend.invalid",
                 "org/model",
                 "credential_env",
                 "endpoint",
-                "registration_id",
                 "approval_wait_seconds",
             ]:
                 assert private not in response.text + created.text + events.text + json.dumps(app.openapi())

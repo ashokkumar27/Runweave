@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     task_queue: str = "agents-v1"
     api_key: SecretStr = SecretStr("")
     model_registry_file: str = "config/models.json"
+    tool_registry_file: str = "config/tools.json"
+    openai_force_ipv4: bool = True
     approval_wait_seconds: int = Field(default=86400, ge=1, le=604800)
     max_active_runs: int = 20
     mcp_url: str = "http://localhost:8001/mcp"

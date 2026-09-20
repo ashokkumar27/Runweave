@@ -1,0 +1,5 @@
+FROM python:3.13-slim
+COPY sandbox/job.py /opt/job.py
+# Stable convenience paths refer only to the bounded in-container tmpfs.
+RUN ln -s /work/input /input && ln -s /work/output /output
+ENTRYPOINT ["python", "-I", "-B", "/opt/job.py"]

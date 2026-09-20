@@ -123,8 +123,11 @@ async def test_dispatch_ack_loss_and_cancel_before_start(pg_store):
     assert not any(e.type == "tool.started" for e in await pg_store.events(run.id))
 
 
+@pytest.mark.parametrize("approved", [False, True])
 @pytest.mark.parametrize("time_skipping", [False, True])
-async def test_approval_survives_hard_worker_restart(pg_store, tmp_path, time_environment, time_skipping):
+async def test_approval_survives_hard_worker_restart(
+    pg_store, tmp_path, time_environment, time_skipping, approved
+):
     temporal = time_environment.client if time_skipping else await client()
     queue = f"restart-{uuid4().hex}"
     env = {
@@ -178,16 +181,17 @@ async def test_approval_survives_hard_worker_restart(pg_store, tmp_path, time_en
         registry_file.write_text(json.dumps(changed))
         env["MODEL_REGISTRY_FILE"] = str(registry_file)
         approval_id = pending.approvals[0].id
-        await pg_store.decide(run.id, approval_id, True)
+        await pg_store.decide(run.id, approval_id, approved)
         process = await start()
         await Dispatcher(pg_store, temporal, queue).once()
         result = await wait_status(pg_store, run.id, {"completed"})
-        assert result.output.answer == "Note recorded"
+        assert (
+            result.output.answer == "Note recorded" if approved else "denied" in result.output.answer.lower()
+        )
         async with pg_store.database.sessions() as db:
-            assert (
-                await db.scalar(select(func.count()).select_from(NoteRow).where(NoteRow.run_id == run.id))
-                == 1
-            )
+            assert await db.scalar(
+                select(func.count()).select_from(NoteRow).where(NoteRow.run_id == run.id)
+            ) == int(approved)
         history = await temporal.get_workflow_handle(f"run:{run.id}").fetch_history()
         from temporalio.worker import Replayer
 
@@ -239,7 +243,7 @@ async def test_approval_rejection_and_cumulative_timeout(pg_store, time_environm
         pg_store.approval_wait_seconds = 86400  # A later operator edit cannot extend this run.
         await wait_round(pg_store, timed.id, "round-0")
         await time_environment.sleep(timedelta(hours=2))
-        await pg_store.decide(timed.id, "round-0", False)
+        await pg_store.decide(timed.id, "round-0", True)
         await dispatch.once()
         await wait_round(pg_store, timed.id, "round-1")
         await time_environment.sleep(timedelta(hours=4, seconds=1))
@@ -252,7 +256,7 @@ async def test_approval_rejection_and_cumulative_timeout(pg_store, time_environm
         await handle.result()
         await dispatch.once()
         async with pg_store.database.sessions() as db:
-            assert await db.scalar(select(func.count()).select_from(NoteRow)) == 0
+            assert await db.scalar(select(func.count()).select_from(NoteRow)) == 1
         from temporalio.worker import Replayer
 
         await Replayer(workflows=[RunWorkflow], plugins=[PydanticAIPlugin()]).replay_workflow(
@@ -284,13 +288,13 @@ async def test_cumulative_execution_and_usage_across_resumes(pg_store, time_envi
         for call_id in ["round-0", "round-1"]:
             await wait_round(pg_store, run.id, call_id)
             await time_environment.sleep(timedelta(hours=2))
-            await pg_store.decide(run.id, call_id, False)
+            await pg_store.decide(run.id, call_id, True)
             await dispatch.once()
         result = await wait_status(pg_store, run.id, {"failed"})
         assert result.error == ("run_timeout" if limit == "active" else "usage_limit")
         assert len(calls) == (3 if limit == "active" else 2)
         async with pg_store.database.sessions() as db:
-            assert await db.scalar(select(func.count()).select_from(NoteRow)) == 0
+            assert await db.scalar(select(func.count()).select_from(NoteRow)) == 2
 
 
 async def test_effect_commit_then_activity_failure_retries_once(pg_store, monkeypatch):
@@ -385,3 +389,110 @@ async def test_resume_activity_retries_consume_active_budget(pg_store, time_envi
         assert len(attempts) == 2
         async with pg_store.database.sessions() as db:
             assert await db.scalar(select(func.count()).select_from(NoteRow)) == 0
+
+
+@pytest.mark.parametrize("mixed", [False, True])
+async def test_run_scoped_denial_retries_readonly_fresh_turn_and_replay(pg_store, monkeypatch, mixed):
+    from pydantic_ai.messages import ModelResponse, ToolCallPart, ToolReturnPart
+    from temporalio.worker import Replayer
+
+    from agent_runtime.runtime import fake_model
+
+    async def response(messages, info):
+        returned = [p for m in messages for p in m.parts if isinstance(p, ToolReturnPart)]
+        notes = [p for p in returned if p.tool_name == "record_note"]
+        if not notes:
+            parts = [ToolCallPart("record_note", {"text": "original"}, tool_call_id="first")]
+            if mixed:
+                parts.append(ToolCallPart("record_note", {"text": "approved"}, tool_call_id="allowed"))
+            return ModelResponse(parts=parts)
+        initial = 2 if mixed else 1
+        if len(notes) < initial + 2:
+            index = len(notes) - initial
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        "record_note",
+                        {"text": "original" if index == 0 else "changed"},
+                        tool_call_id=f"retry-{index}",
+                    )
+                ]
+            )
+        assert all("disabled for this run" in str(p.content) for p in notes[-2:])
+        if not any(p.tool_name == "add" for p in returned):
+            return ModelResponse(parts=[ToolCallPart("add", {"a": 2, "b": 3}, tool_call_id="read")])
+        return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, {"answer": "done", "value": 5})])
+
+    monkeypatch.setattr(fake_model, "function", response)
+    async with working(pg_store) as (temporal, _):
+        run = await submit(pg_store, "retry denial", tools=["record_note", "add"], max_requests=10)
+        pending = await wait_status(pg_store, run.id, {"awaiting_approval"})
+        await pg_store.decide(run.id, "first", False)
+        await pg_store.decide(run.id, "first", False)
+        with pytest.raises(Problem):
+            await pg_store.decide(run.id, "first", True)
+        if mixed:
+            await pg_store.decide(run.id, "allowed", True)
+        result = await wait_status(pg_store, run.id, {"completed"})
+        assert result.output.value == 5
+        events = await pg_store.events(run.id)
+        assert sum(e.type == "approval.required" for e in events) == len(pending.approvals)
+        assert sum(e.type == "tool.effect_committed" for e in events) == int(mixed)
+        async with pg_store.database.sessions() as db:
+            assert await db.scalar(select(func.count()).select_from(NoteRow)) == int(mixed)
+        handle = temporal.get_workflow_handle(f"run:{run.id}")
+        await handle.result()
+        await Replayer(workflows=[RunWorkflow], plugins=[PydanticAIPlugin()]).replay_workflow(
+            await handle.fetch_history()
+        )
+        # A new explicit turn in the same session is a fresh run, with fresh policy state.
+        from agent_runtime.runtime import fake_response
+
+        monkeypatch.setattr(fake_model, "function", fake_response)
+        fresh = await submit(pg_store, "note:fresh turn", tools=["record_note"], session_id=run.session_id)
+        pending = await wait_status(pg_store, fresh.id, {"awaiting_approval"})
+        await pg_store.decide(fresh.id, pending.approvals[0].id, True)
+        await wait_status(pg_store, fresh.id, {"completed"})
+
+
+async def test_persistent_denied_requests_remain_bounded(pg_store, monkeypatch):
+    from agent_runtime.runtime import fake_model
+
+    monkeypatch.setattr(fake_model, "function", two_round_response)
+    async with working(pg_store):
+        run = await submit(pg_store, "repeated denial", tools=["record_note"], max_requests=2)
+        await wait_round(pg_store, run.id, "round-0")
+        await pg_store.decide(run.id, "round-0", False)
+        result = await wait_status(pg_store, run.id, {"failed"})
+        assert result.error == "usage_limit"
+        events = await pg_store.events(run.id)
+        assert sum(e.type == "approval.required" for e in events) == 1
+        assert not any(e.type.startswith("tool.") for e in events)
+        async with pg_store.database.sessions() as db:
+            assert await db.scalar(select(func.count()).select_from(NoteRow)) == 0
+
+
+async def test_unmarked_history_replays_original_denial_semantics(pg_store, monkeypatch):
+    from temporalio import workflow
+    from temporalio.worker import Replayer
+
+    from agent_runtime.runtime import fake_model
+
+    monkeypatch.setattr(fake_model, "function", two_round_response)
+    original = workflow.patched
+    # Generate the original command sequence, with no new patch marker recorded.
+    monkeypatch.setattr(
+        workflow, "patched", lambda patch: False if patch == "run-scoped-note-denial-v1" else original(patch)
+    )
+    async with working(pg_store) as (temporal, _):
+        run = await submit(pg_store, "legacy denial", tools=["record_note"])
+        for call_id in ["round-0", "round-1"]:
+            await wait_round(pg_store, run.id, call_id)
+            await pg_store.decide(run.id, call_id, False)
+        await wait_status(pg_store, run.id, {"completed"})
+        handle = temporal.get_workflow_handle(f"run:{run.id}")
+        await handle.result()
+        history = await handle.fetch_history()
+    monkeypatch.setattr(workflow, "patched", original)
+    assert sum(e.type == "approval.required" for e in await pg_store.events(run.id)) == 2
+    await Replayer(workflows=[RunWorkflow], plugins=[PydanticAIPlugin()]).replay_workflow(history)

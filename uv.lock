@@ -11,6 +11,7 @@ dependencies = [
     { name = "asyncpg" },
     { name = "fastapi" },
     { name = "fastmcp-slim", extra = ["server"] },
+    { name = "httpx" },
     { name = "opentelemetry-exporter-otlp-proto-http" },
     { name = "opentelemetry-sdk" },
     { name = "pydantic-ai-slim", extra = ["anthropic", "mcp", "openai", "temporal"] },
@@ -22,7 +23,6 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "aiosqlite" },
-    { name = "httpx" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
@@ -34,6 +34,7 @@ requires-dist = [
     { name = "asyncpg", specifier = "==0.31.0" },
     { name = "fastapi", specifier = "==0.141.1" },
     { name = "fastmcp-slim", extras = ["server"], specifier = "==4.0.3" },
+    { name = "httpx", specifier = "==0.28.1" },
     { name = "opentelemetry-exporter-otlp-proto-http", specifier = "==1.44.0" },
     { name = "opentelemetry-sdk", specifier = "==1.44.0" },
     { name = "pydantic-ai-slim", extras = ["anthropic", "mcp", "openai", "temporal"], specifier = "==2.43.0" },
@@ -45,7 +46,6 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "aiosqlite", specifier = "==0.22.1" },
-    { name = "httpx", specifier = "==0.28.1" },
     { name = "pytest", specifier = "==9.1.1" },
     { name = "pytest-asyncio", specifier = "==1.4.0" },
     { name = "ruff", specifier = "==0.16.7" },

@@ -3,3 +3,9 @@
 .venv
 __pycache__
 .pytest_cache
+var
+/tmp
+docs
+*.sqlite*
+*.log
+sandbox/state

@@ -6,6 +6,7 @@ ALLOWED_CODES = {
     "insufficient_quota",
     "rate_limit_exceeded",
     "invalid_api_key",
+    "ip_not_authorized",
     "model_not_found",
     "unsupported_parameter",
     "invalid_request_error",
@@ -30,13 +31,22 @@ def main():
     import httpx
     from dotenv import dotenv_values
 
+    from agent_runtime.config import Settings
+
     values = dotenv_values(Path(__file__).resolve().parents[1] / ".env.local")
     key = values.get("OPENAI_API_KEY")
     if not key:
         print("status=none code=unclassified type=unclassified")
         return 2
     try:
-        with httpx.Client(timeout=10, trust_env=False, follow_redirects=False) as client:
+        overrides = {}
+        if values.get("OPENAI_FORCE_IPV4") is not None:
+            overrides["openai_force_ipv4"] = values["OPENAI_FORCE_IPV4"]
+        force_ipv4 = Settings(**overrides).openai_force_ipv4
+        transport = httpx.HTTPTransport(
+            local_address="0.0.0.0" if force_ipv4 else None, trust_env=False, retries=0
+        )
+        with httpx.Client(timeout=10, trust_env=False, follow_redirects=False, transport=transport) as client:
             response = client.get(
                 "https://api.openai.com/v1/models", headers={"Authorization": f"Bearer {key}"}
             )

@@ -25,8 +25,12 @@ class Registration(BaseModel):
     max_output_tokens: int = Field(ge=128, le=1000000)
     total_tokens_limit: int = Field(ge=128, le=1000000)
 
+    reasoning_effort: Literal["none", "minimal", "low", "medium", "high"] | None = None
+
     @model_validator(mode="after")
     def connection(self):
+        if self.reasoning_effort is not None and self.adapter not in {"openai_responses", "openai_chat"}:
+            raise ValueError("Reasoning settings require an OpenAI adapter")
         if self.auth == "env":
             import re
 
@@ -56,7 +60,11 @@ class Registration(BaseModel):
 
     @property
     def identity(self):
-        encoded = json.dumps(self.model_dump(), sort_keys=True, separators=(",", ":")).encode()
+        data = self.model_dump()
+        # Preserve identities of retained registrations created before this optional field.
+        if self.reasoning_effort is None:
+            data.pop("reasoning_effort")
+        encoded = json.dumps(data, sort_keys=True, separators=(",", ":")).encode()
         return hashlib.sha256(encoded).hexdigest()
 
     def available(self):

@@ -9,7 +9,7 @@ from temporalio.common import RetryPolicy
 
 with workflow.unsafe.imports_passed_through():
     import annotated_types  # noqa: F401 -- preload validation dependencies for sandbox replay
-    from pydantic_ai import DeferredToolRequests, DeferredToolResults
+    from pydantic_ai import DeferredToolRequests, DeferredToolResults, ToolDenied
     from pydantic_ai.durable_exec.temporal import PydanticAIWorkflow
     from pydantic_ai.exceptions import UsageLimitExceeded
     from pydantic_ai.messages import ModelMessagesTypeAdapter
@@ -89,6 +89,9 @@ class RunWorkflow(PydanticAIWorkflow):
     async def execute(self, data):
         config, run_id = data["config"], data["id"]
         history = ModelMessagesTypeAdapter.validate_python(data["history"])
+        # Unmarked retained histories replay the original per-call decisions.
+        denial_policy = workflow.patched("run-scoped-note-denial-v1")
+        denied_tools: set[str] = set()
         usage = RunUsage()
         prompt, deferred = data["input"], None
         for _ in range(config["max_tool_calls"] + 1):
@@ -138,10 +141,19 @@ class RunWorkflow(PydanticAIWorkflow):
             ]
             if not approvals or result.output.calls:
                 raise ValueError("Unsupported deferred tool request")
-            await io(await_approval, {"run_id": run_id, "approvals": approvals})
-            await self.wait_for_approval(approvals)
-            deferred = DeferredToolResults(approvals={a["id"]: self.decisions[a["id"]] for a in approvals})
-            await io(resume_run, run_id)
+            eligible, refused = partition_approvals(approvals, denied_tools)
+            if eligible:
+                await io(await_approval, {"run_id": run_id, "approvals": eligible})
+                await self.wait_for_approval(eligible)
+                refused.update({a["id"]: self.decisions[a["id"]] for a in eligible})
+                if denial_policy:
+                    denied_tools.update(
+                        a["tool"]
+                        for a in eligible
+                        if a["tool"] == "record_note" and not self.decisions[a["id"]]
+                    )
+                await io(resume_run, run_id)
+            deferred = DeferredToolResults(approvals=refused)
             prompt = None
         await io(finish_run, {"run_id": run_id, "status": "failed", "error": "tool_budget_exhausted"})
 
@@ -170,3 +182,17 @@ class RunWorkflow(PydanticAIWorkflow):
             self.approval_remaining = max(0, self.approval_remaining - (workflow.time() - started))
         self.active_started = workflow.time()
         self.active_timer.reschedule(asyncio.get_running_loop().time() + self.active_remaining)
+
+
+def partition_approvals(approvals, denied_tools):
+    """Refuse later calls before publication, regardless of ID or arguments."""
+    eligible, refused = [], {}
+    for approval in approvals:
+        if approval["tool"] in denied_tools:
+            refused[approval["id"]] = ToolDenied(
+                message="Recording notes is disabled for this run following your denial. "
+                "Continue with explanation or read-only tools; a new user turn can request approval again."
+            )
+        else:
+            eligible.append(approval)
+    return eligible, refused

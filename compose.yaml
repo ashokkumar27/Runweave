@@ -37,27 +37,52 @@ services:
     command: ["uv", "run", "--frozen", "--no-dev", "alembic", "upgrade", "head"]
   api:
     build: .
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
     profiles: [app]
     depends_on:
       migrate: {condition: service_completed_successfully}
-    env_file: ${AGENTS_ENV_FILE:-.env.local}
+    env_file: .env.api.local
     environment:
       DATABASE_URL: postgresql+asyncpg://agents:local-development-only@postgres:5432/agents
       TEMPORAL_ADDRESS: temporal:7233
+      OPENAI_API_KEY: ""
+      ANTHROPIC_API_KEY: ""
     command: ["uv", "run", "--frozen", "--no-dev", "uvicorn", "agent_runtime.api:app", "--host", "0.0.0.0", "--port", "8000"]
     ports: ["127.0.0.1:${API_PORT:-8000}:8000"]
   worker:
     build: .
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
     profiles: [app]
     depends_on:
       migrate: {condition: service_completed_successfully}
       temporal: {condition: service_started}
       mcp: {condition: service_started}
-    env_file: ${AGENTS_ENV_FILE:-.env.local}
+    env_file: ["${AGENTS_ENV_FILE:-.env.local}", ".env.sandbox.local"]
     environment:
       DATABASE_URL: postgresql+asyncpg://agents:local-development-only@postgres:5432/agents
       TEMPORAL_ADDRESS: temporal:7233
       MCP_URL: http://mcp:8001/mcp
+      SANDBOX_BROKER_URL: http://sandbox-broker:8090
     command: ["uv", "run", "--frozen", "--no-dev", "python", "-m", "agent_runtime.worker"]
+  sandbox-image:
+    image: agent-runtime-sandbox:v1
+    build:
+      context: .
+      dockerfile: sandbox/Dockerfile.job
+    profiles: [sandbox-build]
+  sandbox-broker:
+    build:
+      context: .
+      dockerfile: sandbox/Dockerfile.broker
+    profiles: [app]
+    env_file: .env.sandbox.local
+    ports: ["127.0.0.1:18090:8090"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - sandbox-state:/state
+    restart: unless-stopped
 volumes:
+  sandbox-state:
   postgres-data:

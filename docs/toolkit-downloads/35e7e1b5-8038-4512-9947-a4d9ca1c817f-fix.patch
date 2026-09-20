@@ -1,0 +1,5 @@
+--- a/config.env
++++ b/config.env
+@@ -1 +1 @@
+-TIMEOUT_SECONDS=30
++TIMEOUT_SECONDS=60

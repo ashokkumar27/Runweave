@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, DateTime, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -104,3 +104,32 @@ class Database:
 
     async def close(self):
         await self.engine.dispose()
+
+
+class ToolkitRunRow(Base):
+    __tablename__ = "toolkit_runs"
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"), primary_key=True)
+    root_id: Mapped[str] = mapped_column(String(36), index=True)
+    parent_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    state: Mapped[dict] = mapped_column(JSON)
+
+
+class ArtifactRow(Base):
+    __tablename__ = "artifacts"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    key: Mapped[str] = mapped_column(String(160), unique=True)
+    sha256: Mapped[str] = mapped_column(String(64))
+    media_type: Mapped[str] = mapped_column(String(80))
+    filename: Mapped[str] = mapped_column(String(100))
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    content: Mapped[bytes] = mapped_column(LargeBinary)
+    producer_run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class ToolkitOperationRow(Base):
+    __tablename__ = "toolkit_operations"
+    id: Mapped[str] = mapped_column(String(160), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"), index=True)
+    digest: Mapped[str] = mapped_column(String(64))
+    result: Mapped[dict | None] = mapped_column(JSON, nullable=True)

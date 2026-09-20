@@ -1,0 +1,216 @@
+{
+  "csv_write": {
+    "source": "var/acceptance/completion-models-baseline-v1/live.wire.jsonl",
+    "source_sha256": "7e2f7e202bac313277ad43a19098338983d934e74066c6b1f5942ac023744433",
+    "context": {
+      "run_id": "4bb910b4-59c4-4d7a-9177-141f4115e655",
+      "root_id": "4bb910b4-59c4-4d7a-9177-141f4115e655",
+      "scenario": "csv",
+      "operation_id": "4bb910b4-59c4-4d7a-9177-141f4115e655:model:1",
+      "attempt_id": "4bb910b4-59c4-4d7a-9177-141f4115e655:model:1:b011cec2-5d8d-425e-b459-d3a560dc7814"
+    },
+    "output": [
+      {
+        "id": "fc_09677e7a0ba4b697006aafa774b67087d09159238c7df6508b",
+        "type": "function_call",
+        "status": "completed",
+        "arguments": "{\"action\":{\"kind\":\"write\",\"files\":[{\"path\":\"cleaned.csv\",\"content_base64\":\"bmFtZSxhbW91bnQKQWxpY2UsNwpCb2IsLTIKRXZlLDkK\"},{\"path\":\"summary.csv\",\"content_base64\":\"dmFsaWRfcm93cyxyZWplY3RlZF9yb3dzLHRvdGFsCjMsMiwxNAo=\"}]}}",
+        "call_id": "call_irYarPhYGXGTDcIYuK1qQvbq",
+        "name": "final_result"
+      }
+    ],
+    "usage": {
+      "input_tokens": 1035,
+      "input_tokens_details": {
+        "cache_write_tokens": 0,
+        "cached_tokens": 0
+      },
+      "output_tokens": 107,
+      "output_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "total_tokens": 1142
+    }
+  },
+  "invalid_check": {
+    "source": "var/acceptance/completion-models-baseline-v1/live.wire.jsonl",
+    "source_sha256": "7e2f7e202bac313277ad43a19098338983d934e74066c6b1f5942ac023744433",
+    "context": {
+      "run_id": "4bb910b4-59c4-4d7a-9177-141f4115e655",
+      "root_id": "4bb910b4-59c4-4d7a-9177-141f4115e655",
+      "scenario": "csv",
+      "operation_id": "4bb910b4-59c4-4d7a-9177-141f4115e655:model:3",
+      "attempt_id": "4bb910b4-59c4-4d7a-9177-141f4115e655:model:3:1de863e4-9bd4-46eb-9f52-f63c7e995d94"
+    },
+    "output": [
+      {
+        "id": "fc_0144f4aff1b4df85006aafa77be5c487d0879f12e3725354b3",
+        "type": "function_call",
+        "status": "completed",
+        "arguments": "{\"action\":{\"kind\":\"verify\",\"check\":\"bytes0\"}}",
+        "call_id": "call_nhrC0tNS0dqZ7V2IiMhxDJ5X",
+        "name": "final_result"
+      }
+    ],
+    "usage": {
+      "input_tokens": 954,
+      "input_tokens_details": {
+        "cache_write_tokens": 0,
+        "cached_tokens": 0
+      },
+      "output_tokens": 25,
+      "output_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "total_tokens": 979
+    }
+  },
+  "recovery_failed": {
+    "source": "var/acceptance/completion-models-baseline-v1/live.wire.jsonl",
+    "source_sha256": "7e2f7e202bac313277ad43a19098338983d934e74066c6b1f5942ac023744433",
+    "context": {
+      "run_id": "92d4b759-53b9-4641-8d7d-835263349056",
+      "root_id": "92d4b759-53b9-4641-8d7d-835263349056",
+      "scenario": "recovery",
+      "operation_id": "92d4b759-53b9-4641-8d7d-835263349056:model:0",
+      "attempt_id": "92d4b759-53b9-4641-8d7d-835263349056:model:0:809d4980-d0cd-4937-9e9e-cb1ebc7b7077"
+    },
+    "output": [
+      {
+        "id": "fc_08e75f5fa5406508006aafa78625ac87d09cb8dab4151d2f37",
+        "type": "function_call",
+        "status": "completed",
+        "arguments": "{\"action\":{\"kind\":\"command\",\"argv\":[\"python\",\"report.py\",\"input.csv\"]}}",
+        "call_id": "call_V8hldACk5rYclXt7ytKN054S",
+        "name": "final_result"
+      }
+    ],
+    "usage": {
+      "input_tokens": 703,
+      "input_tokens_details": {
+        "cache_write_tokens": 0,
+        "cached_tokens": 0
+      },
+      "output_tokens": 31,
+      "output_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "total_tokens": 734
+    }
+  },
+  "recovery_uncommitted": {
+    "source": "var/acceptance/completion-models-baseline-v1/live.wire.jsonl",
+    "source_sha256": "7e2f7e202bac313277ad43a19098338983d934e74066c6b1f5942ac023744433",
+    "context": {
+      "run_id": "92d4b759-53b9-4641-8d7d-835263349056",
+      "root_id": "92d4b759-53b9-4641-8d7d-835263349056",
+      "scenario": "recovery",
+      "operation_id": "92d4b759-53b9-4641-8d7d-835263349056:model:2",
+      "attempt_id": "92d4b759-53b9-4641-8d7d-835263349056:model:2:e4a189d0-59bc-485d-be0d-5e82d853e365"
+    },
+    "output": [
+      {
+        "id": "fc_0ff21c277727e8df006aafa78c24dc87d09b5b4b59a9c59cb3",
+        "type": "function_call",
+        "status": "completed",
+        "arguments": "{\"action\":{\"kind\":\"command\",\"argv\":[\"python\",\"report.py\",\"inputs.csv\"],\"cwd\":\"\",\"commit\":false}}",
+        "call_id": "call_a40dAH4vDcPKhhiDtAJ5MCnN",
+        "name": "final_result"
+      }
+    ],
+    "usage": {
+      "input_tokens": 894,
+      "input_tokens_details": {
+        "cache_write_tokens": 0,
+        "cached_tokens": 0
+      },
+      "output_tokens": 37,
+      "output_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "total_tokens": 931
+    }
+  },
+  "multiple_checks": {
+    "source": "var/acceptance/completion-models-baseline-v1/live.wire.jsonl",
+    "source_sha256": "7e2f7e202bac313277ad43a19098338983d934e74066c6b1f5942ac023744433",
+    "context": {
+      "run_id": "2da0b2cd-e6c8-461f-bfc8-46f64acfbf74",
+      "root_id": "2da0b2cd-e6c8-461f-bfc8-46f64acfbf74",
+      "scenario": "csv",
+      "operation_id": "2da0b2cd-e6c8-461f-bfc8-46f64acfbf74:model:3",
+      "attempt_id": "2da0b2cd-e6c8-461f-bfc8-46f64acfbf74:model:3:b9ab7f36-d319-40bc-82d7-d801d9fe6a51"
+    },
+    "output": [
+      {
+        "id": "fc_0d9a6f2c0013036c006aafa869f35087d0bb958b8ae770f280",
+        "type": "function_call",
+        "status": "completed",
+        "arguments": "{\"action\":{\"kind\":\"verify\",\"check\":\"k0\"}}",
+        "call_id": "call_IYmJ4aJDtkeeKdK1CjPeXWJz",
+        "name": "final_result"
+      },
+      {
+        "id": "fc_0d9a6f2c0013036c006aafa869f36087d0b2b083d37c258347",
+        "type": "function_call",
+        "status": "completed",
+        "arguments": "{\"action\":{\"kind\":\"verify\",\"check\":\"k1\"}}",
+        "call_id": "call_WfVMjnQ9dbaeOUdg2qDHBLmn",
+        "name": "final_result"
+      },
+      {
+        "id": "fc_0d9a6f2c0013036c006aafa869f36c87d084f1a57dbe4a575e",
+        "type": "function_call",
+        "status": "completed",
+        "arguments": "{\"action\":{\"kind\":\"verify\",\"check\":\"k2\"}}",
+        "call_id": "call_5CJjKRinS7LGgZKRc20zv1KF",
+        "name": "final_result"
+      }
+    ],
+    "usage": {
+      "input_tokens": 1042,
+      "input_tokens_details": {
+        "cache_write_tokens": 0,
+        "cached_tokens": 0
+      },
+      "output_tokens": 84,
+      "output_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "total_tokens": 1126
+    }
+  },
+  "invalid_criteria": {
+    "source": "var/acceptance/completion-models-baseline-v1/live.wire.jsonl",
+    "source_sha256": "7e2f7e202bac313277ad43a19098338983d934e74066c6b1f5942ac023744433",
+    "context": {
+      "run_id": "96c47331-9461-4de6-9bf8-c1fbcf45f22d",
+      "root_id": "96c47331-9461-4de6-9bf8-c1fbcf45f22d",
+      "scenario": "direct",
+      "operation_id": "96c47331-9461-4de6-9bf8-c1fbcf45f22d:model:5",
+      "attempt_id": "96c47331-9461-4de6-9bf8-c1fbcf45f22d:model:5:9705b1b8-f65d-4233-ab44-06dc5e0dc3fd"
+    },
+    "output": [
+      {
+        "id": "fc_0024e3de2b9cf15d006aafa8a63e8c87d0a892d4e31c07e141",
+        "type": "function_call",
+        "status": "completed",
+        "arguments": "{\"action\":{\"kind\":\"complete\",\"answer\":\"Created `sum.txt` containing exactly `12\\\\n`. All required checks passed.\",\"assessments\":[{\"criterion\":\"output\",\"disposition\":\"satisfied\",\"assessment\":\"Fresh bytes check `bytes0` passed; `sum.txt` matches base64 `MTIK` (exactly `12` plus one LF).\"},{\"criterion\":\"integration\",\"disposition\":\"satisfied\",\"assessment\":\"Fresh integrated Python syntax check `runtime.syntax` passed with exit code 0.\"}]}}",
+        "call_id": "call_2HRc7XDJTKglyhEEcRr5BNmS",
+        "name": "final_result"
+      }
+    ],
+    "usage": {
+      "input_tokens": 920,
+      "input_tokens_details": {
+        "cache_write_tokens": 0,
+        "cached_tokens": 0
+      },
+      "output_tokens": 117,
+      "output_tokens_details": {
+        "reasoning_tokens": 0
+      },
+      "total_tokens": 1037
+    }
+  }
+}

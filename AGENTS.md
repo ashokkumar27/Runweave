@@ -1,7 +1,7 @@
 # Project instructions
 
-- For Codex development, use only gpt-6-astra: high reasoning for design/planning, medium for implementation/tests. Match the runtime settings; do not silently substitute another model.
-- Use PLAN.md for scope and README.md for setup and verified commands.
+- Respect the user’s chosen model and reasoning level for Codex development. Any model the user selects is allowed; do not require a particular model or block work based on model choice.
+- Use PLAN.md for current scope, README.md for setup, and docs/ for detailed usage, operations, and validation.
 - Keep public API schemas and events independent of PydanticAI and Temporal types.
 - Keep workflow coordination deterministic; execute model and tool I/O through activities.
 - Make run submission, persisted events, and retried tool effects idempotent or explicitly reconciled.

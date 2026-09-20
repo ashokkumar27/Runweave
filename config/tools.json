@@ -1,0 +1,62 @@
+[
+  {
+    "alias": "add",
+    "handler": "add",
+    "version": 1
+  },
+  {
+    "alias": "record_note",
+    "handler": "record_note",
+    "version": 1
+  },
+  {
+    "alias": "convert_temperature",
+    "handler": "convert_temperature",
+    "version": 1
+  },
+  {
+    "alias": "document_read",
+    "handler": "document_read",
+    "version": 1
+  },
+  {
+    "alias": "document_search",
+    "handler": "document_search",
+    "version": 1
+  },
+  {
+    "alias": "document_compare",
+    "handler": "document_compare",
+    "version": 1
+  },
+  {
+    "alias": "csv_analyze",
+    "handler": "csv_analyze",
+    "version": 1
+  },
+  {
+    "alias": "python_analyze",
+    "handler": "python_analyze",
+    "version": 1
+  },
+  {
+    "alias": "repository_inspect",
+    "handler": "repository_inspect",
+    "version": 1
+  },
+  {
+    "alias": "repository_read",
+    "handler": "repository_read",
+    "version": 1
+  },
+  {
+    "alias": "repository_patch",
+    "handler": "repository_patch",
+    "version": 1
+  },
+  {
+    "alias": "delegate",
+    "handler": "delegate",
+    "version": 1
+  }
+]
