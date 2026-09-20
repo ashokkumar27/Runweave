@@ -1,14 +1,29 @@
 # Independent Agents API
 
-Turn a user request, configuration, and context into a plan, authorized tool use, optional delegation, verification, and a result.
+A self-hosted API for iterative tasks: turn instructions and context into authorized tool use, optional delegation, verification, and a result. Applications can submit work, follow its progress, and continue a session through the API, Python client, or CLI.
 
-A self-hosted development tool for iterative task execution through an owned API. Supply instructions, tool permissions and context; the general runtime can plan, act, inspect results and revise its approach. Optional scoped subagents share bounded resources. Completion requires applicable verification evidence, not just a model's claim of success.
+**Experimental; not production-ready.** Full live acceptance remains incomplete, and the existing test fixtures do not establish general reliability. See the [latest findings](docs/completion-models-findings.md) for known failures and limitations.
 
-**Development build—not production-ready.** Latest live acceptance: **11/15**; Luna direct and all three parallel cases failed. These narrow fixtures do not establish general reliability. No production rollout was performed for the latest work. See [latest findings](docs/completion-models-findings.md) and the [validation index](docs/validation-index.md).
+## Capabilities
+
+- Durable run submission and session continuation, with idempotent submission retries.
+- Ordered, persisted events that clients can replay over server-sent events (SSE).
+- Tool permissions, approval decisions, cancellation, and bounded execution.
+- Uploadable artifacts, downloadable results, and isolated project workspaces.
+- Scoped delegation with shared resource limits and verification of integrated results.
+- Completion checks against stored evidence for the current project revision.
+
+The current scope supports one authenticated workspace with explicit provider selection. Multi-tenancy, automatic model routing, and arbitrary network or package access from generated code are outside that scope.
+
+## Architecture
+
+FastAPI exposes public Agent, Session, Run, and Event contracts. PostgreSQL stores application state and ordered events; a transactional outbox connects persisted submissions to workflow dispatch.
+
+Temporal coordinates deterministic workflows and recovery. Model and tool I/O runs through activities, with PydanticAI behind private adapters. Public API schemas stay independent of both execution frameworks. Generated code executes in isolated containers under bounded permissions and resources.
 
 ## Start locally
 
-Requires Python **3.12–3.13**, **uv 0.11.12**, and Docker Compose with daemon access (or non-interactive `sudo -n docker`).
+From the root of a Git checkout, use a POSIX environment with Python **3.12–3.13**, **uv 0.11.12**, and Docker Compose with daemon access (or non-interactive `sudo -n docker`).
 
 ```bash
 uv sync --frozen
@@ -16,11 +31,13 @@ test -e .env.local || cp .env.example .env.local
 uv run python -m scripts.start_local
 ```
 
-The wrapper preserves existing credentials and volumes, creates only a missing app `API_KEY`, and waits for local services. Startup makes no paid model call. Keep `.env.local` private.
+The startup wrapper preserves existing credentials and volumes, generates a missing app `API_KEY` and sandbox authentication, and waits for local services. Startup makes no model calls. Keep `.env.local` private; see [operations](docs/operations.md#startup-and-recovery) for credential handling and recovery.
 
 API: **http://localhost:18000** · Interactive API docs: **http://localhost:18000/docs**.
 
 ## Try a scripted fake task
+
+With local services running:
 
 ```bash
 uv run --env-file .env.local python -m agent_runtime.cli readiness
@@ -29,13 +46,22 @@ uv run --env-file .env.local python -m agent_runtime.cli agent --tools add
 uv run --env-file .env.local python -m agent_runtime.cli submit AGENT_ID 'add 2 3' --key demo-1 --wait
 ```
 
-The default `fake/deterministic` provider demonstrates scripted tasks; this example does **not** demonstrate general language autonomy. Reuse the key only when retrying the same submission; use a new key for a new task. Readiness observes local dependencies, not provider verification.
+The default `fake/deterministic` provider uses scripted actions to add two numbers without a paid model call. This demonstrates the submission and tool lifecycle, not general language autonomy.
 
-## Use and operate
+Reuse the idempotency key only when retrying the same submission; use a new key for a new task. Readiness checks local dependencies but does not verify provider or MCP access.
 
-- [Usage](docs/usage.md): Python/API examples, [general runtime configuration](docs/usage.md#general-runtime-configuration), workspaces, tools and delegation.
-- [Operations](docs/operations.md): local development, provider setup, execution limits, recovery and sandbox security.
-- [Validation index](docs/validation-index.md): current limitations, historical evidence and terminal campaign restrictions.
-- [Current project plan](PLAN.md): objective, scope, latest state and next priorities.
+## Documentation
 
-FastAPI exposes the public contracts; PostgreSQL retains application state and events, Temporal coordinates workflows, and PydanticAI handles model activities. Public API schemas remain independent of execution frameworks. One authenticated workspace is supported; provider selection is explicit.
+- [Usage](docs/usage.md): Python/API examples, CLI commands, artifacts, and workspaces.
+- [General runtime configuration](docs/usage.md#general-runtime-configuration): instructions, authorized tools, delegation, and completion checks.
+- [Operations](docs/operations.md): provider setup, execution limits, recovery, and sandbox security.
+- [Validation index](docs/validation-index.md): recorded checks, evidence, and limitations.
+- [Current project plan](PLAN.md): scope, current state, and next priorities.
+
+## Contributing
+
+Read [AGENTS.md](AGENTS.md) for project conventions and [PLAN.md](PLAN.md) for current scope. Existing unpaid checks are documented under [local checks](docs/validation-index.md#local-checks) and in [CI](.github/workflows/ci.yml); they include linting, formatting, and fake-model tests. Integration checks require local services.
+
+## License
+
+License pending. No license file is included; the owner must choose a license before open-source publication.
