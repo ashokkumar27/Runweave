@@ -76,7 +76,7 @@ Reuse the idempotency key only when retrying the same submission; use a new key 
 
 ## License
 
-License pending; no license file is included.
+Licensed under the [Apache License 2.0](LICENSE).
 
 ## TODO
 
@@ -87,4 +87,4 @@ Outstanding work from [PLAN.md](PLAN.md#next-priorities), plus publication prepa
 - [ ] Reduce repeated actions and clarify pending completion checks.
 - [ ] Improve parallel/subagent completion, compact child context, and investigate reservation headroom within shared limits.
 - [ ] Complete remaining evaluation and recovery/replay checks, and establish deployment-readiness evidence.
-- [ ] Choose and add a license before open-source publication.
+- [x] Choose and add a license before open-source publication.
