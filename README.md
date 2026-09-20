@@ -1,8 +1,6 @@
 # Independent Agents API
 
-A self-hosted API for iterative tasks: turn instructions and context into authorized tool use, optional delegation, verification, and a result. Applications can submit work, follow its progress, and continue a session through the API, Python client, or CLI.
-
-**Experimental; not production-ready.** Full live acceptance remains incomplete, and the existing test fixtures do not establish general reliability. See the [latest findings](docs/completion-models-findings.md) for known failures and limitations.
+A self-hosted API for tasks that combine instructions, context, and authorized tools to produce results. Submit work, follow its progress, and continue a session through the API, Python client, or CLI.
 
 ## Capabilities
 
@@ -16,6 +14,10 @@ A self-hosted API for iterative tasks: turn instructions and context into author
 The current scope supports one authenticated workspace with explicit provider selection. Multi-tenancy, automatic model routing, and arbitrary network or package access from generated code are outside that scope.
 
 ## Architecture
+
+![Three-layer architecture: clients submit through FastAPI to PostgreSQL; the outbox dispatches Temporal workflows with optional scoped subagents. Workflows schedule model and tool activities; tools access isolated containers through a sandbox broker. The task loop progresses from request to plan, action, verification, and result, returning to planning when needed.](docs/assets/architecture-overview-v2.png)
+
+*Clients submit tasks; durable workflows coordinate tools and return results.*
 
 FastAPI exposes public Agent, Session, Run, and Event contracts. PostgreSQL stores application state and ordered events; a transactional outbox connects persisted submissions to workflow dispatch.
 
@@ -50,6 +52,13 @@ The default `fake/deterministic` provider uses scripted actions to add two numbe
 
 Reuse the idempotency key only when retrying the same submission; use a new key for a new task. Readiness checks local dependencies but does not verify provider or MCP access.
 
+## Usage guidelines
+
+- Configure task instructions, an explicit provider/model, and authorized tools in an [agent configuration](docs/usage.md#general-runtime-configuration). Use the fake provider for scripted examples; select a registered live provider for language tasks.
+- [Attach inputs and workspaces](docs/usage.md#workspaces-artifacts-and-inspection) when needed: reattach artifacts and specify the workspace/revision on each submission or continuation.
+- When a run pauses for approval, [review the exact tool arguments](docs/usage.md#python-client-and-api) before approving or denying the request.
+- Track progress with `watch`, retrieve results with `get` or `wait`, and inspect outputs before continuing. Use [`continue`](docs/usage.md#python-client-and-api) for a new turn in the same session, with a new idempotency key.
+
 ## Documentation
 
 - [Usage](docs/usage.md): Python/API examples, CLI commands, artifacts, and workspaces.
@@ -60,8 +69,22 @@ Reuse the idempotency key only when retrying the same submission; use a new key 
 
 ## Contributing
 
-Read [AGENTS.md](AGENTS.md) for project conventions and [PLAN.md](PLAN.md) for current scope. Existing unpaid checks are documented under [local checks](docs/validation-index.md#local-checks) and in [CI](.github/workflows/ci.yml); they include linting, formatting, and fake-model tests. Integration checks require local services.
+1. Read [AGENTS.md](AGENTS.md) for project conventions and scope your work against [PLAN.md](PLAN.md).
+2. Keep changes focused on the task and follow the existing public contracts and workflow boundaries.
+3. Use fake models for tests by default; cover API contracts and recovery paths when your changes affect them.
+4. Update relevant documentation and run the applicable [local checks](docs/validation-index.md#local-checks) and [CI checks](.github/workflows/ci.yml). Integration checks require local services.
 
 ## License
 
-License pending. No license file is included; the owner must choose a license before open-source publication.
+License pending; no license file is included.
+
+## TODO
+
+Development build; not production-ready, with live acceptance incomplete—see the [latest findings](docs/completion-models-findings.md).
+
+Outstanding work from [PLAN.md](PLAN.md#next-priorities), plus publication preparation:
+
+- [ ] Reduce repeated actions and clarify pending completion checks.
+- [ ] Improve parallel/subagent completion, compact child context, and investigate reservation headroom within shared limits.
+- [ ] Complete remaining evaluation and recovery/replay checks, and establish deployment-readiness evidence.
+- [ ] Choose and add a license before open-source publication.
