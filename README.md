@@ -87,4 +87,3 @@ Outstanding work from [PLAN.md](PLAN.md#next-priorities), plus publication prepa
 - [ ] Reduce repeated actions and clarify pending completion checks.
 - [ ] Improve parallel/subagent completion, compact child context, and investigate reservation headroom within shared limits.
 - [ ] Complete remaining evaluation and recovery/replay checks, and establish deployment-readiness evidence.
-- [x] Choose and add a license before open-source publication.
