@@ -1,6 +1,8 @@
-# Runweave - Independent Agents API
+# Runweave
 
-A self-hosted API for tasks that combine instructions, context, and authorized tools to produce results. Submit work, follow its progress, and continue a session through the API, Python client, or CLI.
+**A self-hosted, model-agnostic runtime API for durable AI agents.**
+
+Build and run agents with tools, persistent sessions, isolated workspaces, human approvals, delegation, streaming events, and provider-independent models — behind one API.
 
 ## Capabilities
 
